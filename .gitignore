@@ -13,3 +13,10 @@ bdd100k/labels/100k/val/*
 !bdd100k/labels/100k/val/.gitkeep
 
 token
+utils.py
+coco_utils.py
+coco_eval.py
+engine.py
+transforms.py
+train_backup.py
+__pycache__/*
