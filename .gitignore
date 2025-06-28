@@ -11,3 +11,5 @@ bdd100k/labels/100k/train
 !bdd100k/labels/100k/train/.gitkeep
 bdd100k/labels/100k/val
 !bdd100k/labels/100k/val/.gitkeep
+
+token
