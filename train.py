@@ -61,6 +61,31 @@ def collate_fn(batch):
 
 	return images, boxes, class_ids
 
+def evaluate(model, dataloader, criterion, device):
+    model.eval()
+    val_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for imgs, boxes, class_ids in dataloader:
+            if any(cls.numel() == 0 or (cls == -1).any().item() for cls in class_ids):
+                continue
+            imgs = imgs.to(device)
+            labels = torch.tensor([cls[0].item() for cls in class_ids], device=device)
+
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+            val_loss += loss.item()
+
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+
+    avg_loss = val_loss / len(dataloader)
+    accuracy = correct / total if total > 0 else 0
+    return avg_loss, accuracy
+
 class BDD100KDataset(Dataset):
 	def __init__(self, image_dir, label_dir, class_to_id, transform=None):
 		self.image_dir = image_dir
@@ -136,8 +161,8 @@ class MySimpleCNN(nn.Module):
         x = x.view(x.size(0), -1)             # x: [B, 32*32*32]
         return self.fc(x)
 
-def main():
 
+def main():
     from torch.utils.data import DataLoader
 
     transform = transforms.Compose([
@@ -145,34 +170,45 @@ def main():
         transforms.ToTensor()
     ])
 
-    dataset = BDD100KDataset(
+    train_dataset = BDD100KDataset(
         image_dir='bdd100k/images/100k/train',
         label_dir='bdd100k/labels/100k/train',
         class_to_id=class_to_id,
         transform=transform
     )
 
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True) #개선사항
+    val_dataset = BDD100KDataset(
+        image_dir='bdd100k/images/100k/val',
+        label_dir='bdd100k/labels/100k/val',
+        class_to_id=class_to_id,
+        transform=transform
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=collate_fn, num_workers=4, pin_memory=True) #개선사항
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=collate_fn, num_workers=2, pin_memory=True)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(torch.cuda.is_available())
+    print(f"Using device: {device}")
+    
     model = MySimpleCNN(num_classes=len(class_to_id)).to(device)
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
+    best_val_loss = float('inf')
+    best_model_state = None
+    patience = 3
+    no_improve_epochs = 0
+    max_epochs = 50
+
     for epoch in range(5):
         model.train()
         running_loss = 0.0
+        start_epoch_time = time.time()
 
-        for i, (imgs, boxes, class_ids) in enumerate(dataloader):
+        for i, (imgs, boxes, class_ids) in enumerate(train_loader):
             start_time = time.time()
 
-            if any(cls.numel() == 0 for cls in class_ids):
-                print("빈 class_ids 발견, 해당 배치 스킵")
-                continue
-            
-            if any((cls == -1).any().item() for cls in class_ids):
-                print("잘못된 클래스 (-1) 발견, 해당 배치 스킵")
+            if any(cls.numel() == 0 or (cls == -1).any().item() for cls in class_ids):
                 continue
 
             imgs = imgs.to(device)
@@ -188,9 +224,37 @@ def main():
             running_loss += loss.item()
 			
             if i % 10 == 0:
-                print(f"[Epoch {epoch+1}] Batch {i+1}/{len(dataloader)} - Loss: {loss.item():.4f} - Time: {time.time() - start_time:.4f}")
-				
-        print(f"Epoch {epoch+1} Loss: {running_loss / dataloader.batch_size:.4f}")
+                print(f"[Epoch {epoch+1}] Batch {i+1}/{len(train_loader)} - Loss: {loss.item():.4f} - Time: {time.time() - start_time:.4f}")
+
+        avg_train_loss = running_loss / len(train_loader)
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        
+        epoch_duration = time.time() - start_epoch_time
+
+        #print(f"Epoch {epoch+1} Loss: {running_loss / train_loader.batch_size:.4f}")
+        #print(f"[Epoch {epoch+1} DONE] ⏱ Time: {epoch_duration:.2f}s | 🏋️ Train Loss: {avg_train_loss:.4f} | 🔍 Val Loss: {val_loss:.4f} | ✅ Val Acc: {val_acc*100:.2f}%")
+        print(f"\n✅ Epoch {epoch+1} Summary:")
+        print(f"  - Train Loss: {avg_train_loss:.4f}")
+        print(f"  - Val Loss  : {val_loss:.4f}, Val Accuracy: {val_acc*100:.2f}%")
+        print(f"  - Epoch Time: {time.time() - start_epoch_time:.2f} sec")
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model_state = model.state_dict()
+            no_improve_epochs = 0
+            print("   Validation loss improved. Saving model.")
+        else:
+            no_improve_epochs += 1
+            print(f"   No improvement for {no_improve_epochs} epoch(s).")
+
+            if no_improve_epochs >= patience:
+                print(f"\n Early stopping triggered at epoch {epoch+1}")
+                break
+
+    if best_model_state:
+        model.load_state_dict(best_model_state)
+        torch.save(model.state_dict(), 'best_model.pth')
+        print("\n📦 Best model saved as 'best_model.pth'")
 
     # 저장
     torch.save(model.state_dict(), 'my_simple_cnn.pth')
