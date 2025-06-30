@@ -62,6 +62,14 @@ class_to_id = {
 def collate_fn(batch):
     return tuple(zip(*batch))
 """
+def in_colab():
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
+
 def collate_fn(batch):
     if len(batch) == 0:
         return [], []
@@ -74,8 +82,8 @@ def collate_fn(batch):
 
 class BDD100KDataset(Dataset):
 	def __init__(self, image_dir, label_dir, class_to_id, transform=None):
-		self.image_dir = image_dir
-		self.label_dir = label_dir
+		self.image_dir = '/content/' + image_dir if in_colab() else image_dir
+		self.label_dir = '/content/' + label_dir if in_colab() else label_dir
 		self.transform = transform
 		self.class_to_id = class_to_id
 		self.image_files = sorted([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
